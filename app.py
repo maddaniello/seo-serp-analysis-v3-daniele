@@ -18,7 +18,7 @@ import re
 
 # Configurazione della pagina
 st.set_page_config(
-    page_title="SERP Analyzer Pro",
+    page_title="SERP Analyzer Pro - ScrapingDog",
     page_icon="🔍",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -724,28 +724,51 @@ Cluster: [Nome Cluster 2]
         domain_page_types_df = pd.DataFrame(domain_page_types_list)
 
         domains_df = pd.DataFrame(domains_counter.items(), columns=["Dominio", "Occorrenze"])
-        total_queries = sum(domains_counter.values())
-        domains_df["% Presenza"] = (domains_df["Occorrenze"] / total_queries * 100).round(2)
+        
+        # Gestisci il caso quando non ci sono domini (evita TypeError)
+        if not domains_df.empty and len(domains_counter) > 0:
+            total_queries = sum(domains_counter.values())
+            if total_queries > 0:
+                domains_df["% Presenza"] = (domains_df["Occorrenze"] / total_queries * 100).round(2)
+            else:
+                domains_df["% Presenza"] = 0.0
+        else:
+            # Crea DataFrame vuoto con colonne corrette
+            domains_df = pd.DataFrame(columns=["Dominio", "Occorrenze", "% Presenza"])
 
         query_page_type_data = []
-        for query, page_types in query_page_types.items():
-            for page_type, count in Counter(page_types).items():
-                query_page_type_data.append({
-                    "Query": query, 
-                    "Tipologia Pagina": page_type, 
-                    "Occorrenze": count
-                })
+        if query_page_types:
+            for query, page_types in query_page_types.items():
+                if page_types:  # Solo se ci sono page_types validi
+                    for page_type, count in Counter(page_types).items():
+                        query_page_type_data.append({
+                            "Query": query, 
+                            "Tipologia Pagina": page_type, 
+                            "Occorrenze": count
+                        })
         query_page_type_df = pd.DataFrame(query_page_type_data)
 
-        paa_df = pd.DataFrame(paa_questions, columns=["People Also Ask"])
-        paa_df["Keyword che lo attivano"] = paa_df["People Also Ask"].map(
-            lambda x: ", ".join(paa_to_queries[x])
-        )
+        # Gestisci PAA questions
+        paa_data = []
+        if paa_questions:
+            unique_paa = list(set(paa_questions))  # Rimuovi duplicati
+            for paa in unique_paa:
+                paa_data.append({
+                    "People Also Ask": paa,
+                    "Keyword che lo attivano": ", ".join(paa_to_queries.get(paa, []))
+                })
+        paa_df = pd.DataFrame(paa_data)
 
-        related_df = pd.DataFrame(related_queries, columns=["Related Query"])
-        related_df["Keyword che lo attivano"] = related_df["Related Query"].map(
-            lambda x: ", ".join(related_to_queries[x])
-        )
+        # Gestisci Related queries
+        related_data = []
+        if related_queries:
+            unique_related = list(set(related_queries))  # Rimuovi duplicati
+            for related in unique_related:
+                related_data.append({
+                    "Related Query": related,
+                    "Keyword che lo attivano": ", ".join(related_to_queries.get(related, []))
+                })
+        related_df = pd.DataFrame(related_data)
 
         page_type_df = pd.DataFrame(page_type_counter.items(), 
                                   columns=["Tipologia Pagina", "Occorrenze"])
@@ -754,23 +777,25 @@ Cluster: [Nome Cluster 2]
         ai_overview_list = []
         ai_sources_list = []
         
-        for query, ai_info in ai_overview_data.items():
-            ai_overview_list.append({
-                "Query": query,
-                "Ha AI Overview": ai_info["has_ai_overview"],
-                "Testo AI Overview": ai_info["ai_overview_text"][:500] + "..." if len(ai_info["ai_overview_text"]) > 500 else ai_info["ai_overview_text"],
-                "Numero Fonti": len(ai_info["ai_sources"])
-            })
-            
-            # Aggiungi fonti separate
-            for i, source in enumerate(ai_info["ai_sources"]):
-                ai_sources_list.append({
-                    "Query": query,
-                    "Fonte #": i + 1,
-                    "Titolo Fonte": source["title"],
-                    "Link Fonte": source["link"],
-                    "Dominio Fonte": source["domain"]
-                })
+        if ai_overview_data:
+            for query, ai_info in ai_overview_data.items():
+                if ai_info:  # Verifica che ai_info non sia None o vuoto
+                    ai_overview_list.append({
+                        "Query": query,
+                        "Ha AI Overview": ai_info.get("has_ai_overview", False),
+                        "Testo AI Overview": (ai_info.get("ai_overview_text", "")[:500] + "...") if len(ai_info.get("ai_overview_text", "")) > 500 else ai_info.get("ai_overview_text", ""),
+                        "Numero Fonti": len(ai_info.get("ai_sources", []))
+                    })
+                    
+                    # Aggiungi fonti separate
+                    for i, source in enumerate(ai_info.get("ai_sources", [])):
+                        ai_sources_list.append({
+                            "Query": query,
+                            "Fonte #": i + 1,
+                            "Titolo Fonte": source.get("title", ""),
+                            "Link Fonte": source.get("link", ""),
+                            "Dominio Fonte": source.get("domain", "")
+                        })
         
         ai_overview_df = pd.DataFrame(ai_overview_list)
         ai_sources_df = pd.DataFrame(ai_sources_list)
@@ -843,6 +868,17 @@ def main():
         help="Numero di risultati da analizzare per ogni query"
     )
     
+    st.sidebar.subheader("🔑 Validazione API")
+    if scrapingdog_api_key:
+        st.sidebar.success("✅ ScrapingDog API Key inserita")
+    else:
+        st.sidebar.warning("⚠️ Inserisci ScrapingDog API Key")
+    
+    if openai_api_key:
+        st.sidebar.success("✅ OpenAI API Key inserita")
+    else:
+        st.sidebar.info("💡 OpenAI opzionale per classificazione AI")
+
     st.sidebar.subheader("⚡ Opzioni Velocità")
     use_ai_classification = st.sidebar.checkbox(
         "Usa AI per classificazione avanzata",
@@ -1008,48 +1044,55 @@ def main():
         for i, query in enumerate(queries):
             status_text.text(f"🔍 Analizzando: {query} ({i+1}/{len(queries)})")
             
-            results = analyzer.fetch_serp_results(query, country, language, num_results)
+            try:
+                results = analyzer.fetch_serp_results(query, country, language, num_results)
+                
+                if results:
+                    # Debug mode: mostra struttura dati
+                    if enable_debug and i < 3:  # Solo per le prime 3 query per non sovraccaricare
+                        with st.expander(f"🐛 Debug dati per '{query}'"):
+                            analyzer.debug_response_structure(results, query)
+                            
+                            # Mostra anche il parsing AI Overview in tempo reale
+                            st.write("**🤖 Parsing AI Overview per questa query:**")
+                            ai_test = analyzer.parse_ai_overview(results)
+                            st.write(f"- Ha AI Overview: {ai_test['has_ai_overview']}")
+                            if ai_test['ai_overview_text']:
+                                st.write(f"- Testo trovato: {ai_test['ai_overview_text'][:200]}...")
+                            st.write(f"- Fonti trovate: {len(ai_test['ai_sources'])}")
+                            if ai_test['ai_sources']:
+                                for j, source in enumerate(ai_test['ai_sources'][:3]):
+                                    st.write(f"  {j+1}. {source['title']} - {source['domain']}")
+                    
+                    (domain_page_types_query, domain_occurences_query, query_page_types_query,
+                     paa_questions_query, related_queries_query, paa_to_queries_query,
+                     related_to_queries_query, paa_to_domains_query, ai_overview_info) = analyzer.parse_results(results, query)
+                    
+                    # Salva info AI Overview
+                    ai_overview_data[query] = ai_overview_info
+                    
+                    for domain, page_types in domain_page_types_query.items():
+                        for page_type, count in page_types.items():
+                            domain_page_types[domain][page_type] += count
+                    
+                    for domain, count in domain_occurences_query.items():
+                        domain_occurences[domain] += count
+                    
+                    for query_key, page_types in query_page_types_query.items():
+                        query_page_types[query_key].extend(page_types)
+                    
+                    paa_questions.extend(paa_questions_query)
+                    related_queries.extend(related_queries_query)
+                    paa_to_queries.update(paa_to_queries_query)
+                    related_to_queries.update(related_to_queries_query)
+                    paa_to_domains.update(paa_to_domains_query)
+                    all_domains.extend(domain_page_types_query.keys())
+                else:
+                    st.warning(f"⚠️ Nessun risultato per query: {query}")
             
-            if results:
-                # Debug mode: mostra struttura dati
-                if enable_debug and i < 3:  # Solo per le prime 3 query per non sovraccaricare
-                    with st.expander(f"🐛 Debug dati per '{query}'"):
-                        analyzer.debug_response_structure(results, query)
-                        
-                        # Mostra anche il parsing AI Overview in tempo reale
-                        st.write("**🤖 Parsing AI Overview per questa query:**")
-                        ai_test = analyzer.parse_ai_overview(results)
-                        st.write(f"- Ha AI Overview: {ai_test['has_ai_overview']}")
-                        if ai_test['ai_overview_text']:
-                            st.write(f"- Testo trovato: {ai_test['ai_overview_text'][:200]}...")
-                        st.write(f"- Fonti trovate: {len(ai_test['ai_sources'])}")
-                        if ai_test['ai_sources']:
-                            for j, source in enumerate(ai_test['ai_sources'][:3]):
-                                st.write(f"  {j+1}. {source['title']} - {source['domain']}")
-                
-                (domain_page_types_query, domain_occurences_query, query_page_types_query,
-                 paa_questions_query, related_queries_query, paa_to_queries_query,
-                 related_to_queries_query, paa_to_domains_query, ai_overview_info) = analyzer.parse_results(results, query)
-                
-                # Salva info AI Overview
-                ai_overview_data[query] = ai_overview_info
-                
-                for domain, page_types in domain_page_types_query.items():
-                    for page_type, count in page_types.items():
-                        domain_page_types[domain][page_type] += count
-                
-                for domain, count in domain_occurences_query.items():
-                    domain_occurences[domain] += count
-                
-                for query_key, page_types in query_page_types_query.items():
-                    query_page_types[query_key].extend(page_types)
-                
-                paa_questions.extend(paa_questions_query)
-                related_queries.extend(related_queries_query)
-                paa_to_queries.update(paa_to_queries_query)
-                related_to_queries.update(related_to_queries_query)
-                paa_to_domains.update(paa_to_domains_query)
-                all_domains.extend(domain_page_types_query.keys())
+            except Exception as e:
+                st.error(f"⚠️ Errore durante l'analisi della query '{query}': {str(e)}")
+                continue  # Continua con la query successiva
             
             progress_bar.progress((i + 1) / len(queries))
             
@@ -1059,11 +1102,26 @@ def main():
         status_text.text("✅ Analisi completata! Generazione report...")
 
         domains_counter = Counter(all_domains)
-        excel_data, domains_df, page_type_df, domain_page_types_df, clustering_df, ai_overview_df, ai_sources_df = analyzer.create_excel_report(
-            domains_counter, domain_occurences, query_page_types, domain_page_types,
-            paa_questions, related_queries, paa_to_queries, related_to_queries, paa_to_domains, 
-            ai_overview_data, keyword_clusters
-        )
+        
+        # Verifica se abbiamo risultati validi
+        if not domains_counter:
+            st.warning("⚠️ Nessun risultato valido trovato. Verifica le API keys e riprova.")
+            st.info("💡 Suggerimenti:")
+            st.info("- Controlla che la ScrapingDog API key sia corretta")
+            st.info("- Verifica di avere crediti sufficienti")
+            st.info("- Prova con query più semplici")
+            return
+        
+        try:
+            excel_data, domains_df, page_type_df, domain_page_types_df, clustering_df, ai_overview_df, ai_sources_df = analyzer.create_excel_report(
+                domains_counter, domain_occurences, query_page_types, domain_page_types,
+                paa_questions, related_queries, paa_to_queries, related_to_queries, paa_to_domains, 
+                ai_overview_data, keyword_clusters
+            )
+        except Exception as e:
+            st.error(f"⚠️ Errore durante la generazione del report: {str(e)}")
+            st.info("💡 L'analisi è stata completata ma ci sono stati problemi nella generazione del report Excel.")
+            return
 
         status_text.text("📊 Visualizzazione risultati...")
 
@@ -1083,7 +1141,10 @@ def main():
             cluster_count = len(keyword_clusters) if keyword_clusters else 0
             st.metric("Cluster Semantici", cluster_count)
         with col5:
-            ai_overview_count = sum(1 for ai_info in ai_overview_data.values() if ai_info["has_ai_overview"])
+            ai_overview_count = 0
+            if ai_overview_data:
+                ai_overview_count = sum(1 for ai_info in ai_overview_data.values() 
+                                      if ai_info and ai_info.get("has_ai_overview", False))
             st.metric("Query con AI Overview", ai_overview_count)
 
         # Analisi AI Overview
@@ -1115,7 +1176,8 @@ def main():
                 # Top domini citati in AI Overview
                 all_ai_domains = []
                 for ai_info in ai_overview_data.values():
-                    all_ai_domains.extend(ai_info["ai_source_domains"])
+                    if ai_info and "ai_source_domains" in ai_info:
+                        all_ai_domains.extend(ai_info["ai_source_domains"])
                 
                 if all_ai_domains:
                     ai_domains_counter = Counter(all_ai_domains)
@@ -1132,13 +1194,17 @@ def main():
                         title="Top Domini Citati in AI Overview"
                     )
                     st.plotly_chart(fig_ai_domains, use_container_width=True)
+                else:
+                    st.info("Nessun dominio citato trovato negli AI Overview")
+        else:
+            st.info("ℹ️ Nessuna query ha attivato AI Overview per questa analisi.")
 
         # Grafici esistenti
         col1, col2 = st.columns(2)
         
         with col1:
             st.subheader("📈 Top Domini")
-            if not domains_df.empty:
+            if not domains_df.empty and len(domains_df) > 0:
                 fig_domains = px.bar(
                     domains_df.head(10), 
                     x="Dominio", 
@@ -1147,10 +1213,12 @@ def main():
                 )
                 fig_domains.update_layout(xaxis_tickangle=-45)
                 st.plotly_chart(fig_domains, use_container_width=True)
+            else:
+                st.info("Nessun dominio trovato per creare il grafico")
 
         with col2:
             st.subheader("🏷️ Distribuzione Tipologie")
-            if not page_type_df.empty:
+            if not page_type_df.empty and len(page_type_df) > 0:
                 fig_pie = px.pie(
                     page_type_df, 
                     values="Occorrenze", 
@@ -1158,21 +1226,26 @@ def main():
                     title="Tipologie di Pagine"
                 )
                 st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.info("Nessuna tipologia di pagina trovata per creare il grafico")
 
         if keyword_clusters:
             st.subheader("🧠 Analisi Cluster Semantici")
             
             cluster_sizes = {name: len(keywords) for name, keywords in keyword_clusters.items()}
-            cluster_df = pd.DataFrame(list(cluster_sizes.items()), columns=["Cluster", "Numero Keyword"])
-            
-            fig_clusters = px.bar(
-                cluster_df.sort_values("Numero Keyword", ascending=False),
-                x="Cluster",
-                y="Numero Keyword", 
-                title="Distribuzione Keyword per Cluster"
-            )
-            fig_clusters.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig_clusters, use_container_width=True)
+            if cluster_sizes:
+                cluster_df = pd.DataFrame(list(cluster_sizes.items()), columns=["Cluster", "Numero Keyword"])
+                
+                fig_clusters = px.bar(
+                    cluster_df.sort_values("Numero Keyword", ascending=False),
+                    x="Cluster",
+                    y="Numero Keyword", 
+                    title="Distribuzione Keyword per Cluster"
+                )
+                fig_clusters.update_layout(xaxis_tickangle=-45)
+                st.plotly_chart(fig_clusters, use_container_width=True)
+            else:
+                st.info("Nessun cluster creato per questa analisi")
 
         st.subheader("📋 Tabelle Dettagliate")
         
