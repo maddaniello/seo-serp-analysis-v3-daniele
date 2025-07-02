@@ -877,13 +877,33 @@ def main():
     if openai_api_key:
         st.sidebar.success("✅ OpenAI API Key inserita")
     else:
-        st.sidebar.info("💡 OpenAI opzionale per classificazione AI")
+    # Test API Button
+    if st.sidebar.button("🧪 Testa API", help="Testa ScrapingDog API con una query semplice"):
+        if not scrapingdog_api_key:
+            st.sidebar.error("⚠️ Inserisci prima la ScrapingDog API Key!")
+        else:
+            with st.sidebar:
+                with st.spinner("Testando API..."):
+                    test_analyzer = SERPAnalyzer(scrapingdog_api_key, "dummy")
+                    test_result = test_analyzer.fetch_serp_results("test", "us", "en", 5, False)  # Test senza advance_search per risparmiare crediti
+                    
+                    if test_result:
+                        st.sidebar.success("✅ API funziona correttamente!")
+                        st.sidebar.write(f"Chiavi trovate: {list(test_result.keys())}")
+                    else:
+                        st.sidebar.error("❌ API non funziona - controlla la key")
 
     st.sidebar.subheader("⚡ Opzioni Velocità")
     use_ai_classification = st.sidebar.checkbox(
         "Usa AI per classificazione avanzata",
         value=True,
         help="Disabilita per analisi ultra-veloce (solo regole)"
+    )
+    
+    use_advance_search = st.sidebar.checkbox(
+        "🔍 Advance Search",
+        value=True,
+        help="Include AI Overview e feature avanzate (10 crediti vs 5)"
     )
     
     enable_keyword_clustering = st.sidebar.checkbox(
@@ -907,6 +927,9 @@ def main():
     )
 
     st.header("📝 Inserisci le Query")
+    
+    # Avviso sui crediti
+    st.info("💰 **Costi ScrapingDog**: 5 crediti per query normale, 10 crediti con advance_search (per AI Overview)")
     
     col1, col2 = st.columns([3, 1])
     
@@ -965,6 +988,14 @@ def main():
         if len(queries) > 1000:
             st.error("⚠️ Massimo 1000 query per volta!")
             return
+        
+        # Calcola crediti stimati
+        credits_per_query = 10 if use_advance_search else 5
+        estimated_credits = len(queries) * credits_per_query
+        st.info(f"💰 **Crediti stimati necessari**: {estimated_credits} ({credits_per_query} per query{' con advance_search' if use_advance_search else ''})")
+        
+        if estimated_credits > 1000:
+            st.warning(f"⚠️ Analisi richiede molti crediti ({estimated_credits}). Considera di ridurre le query o disattivare advance_search.")
 
         custom_clusters = []
         if enable_keyword_clustering and 'custom_clusters_input' in locals() and custom_clusters_input.strip():
@@ -979,6 +1010,30 @@ def main():
         
         analyzer.use_ai = use_ai_classification
         analyzer.batch_size = batch_size
+        
+        # Test singola query se richiesto
+        if test_single_query and queries:
+            st.info(f"🧪 **Test Singola Query**: {queries[0]}")
+            test_result = analyzer.fetch_serp_results(queries[0], country, language, num_results, use_advance_search)
+            
+            if test_result:
+                st.success("✅ Test riuscito! Procedo con l'analisi completa.")
+                with st.expander("👀 Visualizza dati di test"):
+                    st.write("**Chiavi principali trovate:**")
+                    for key in test_result.keys():
+                        st.write(f"- {key}: {type(test_result[key])}")
+                    
+                    if "organic_data" in test_result:
+                        st.write(f"- organic_data contiene: {len(test_result['organic_data'])} risultati")
+                    
+                    if "people_also_ask" in test_result:
+                        st.write(f"- people_also_ask contiene: {len(test_result['people_also_ask'])} domande")
+                        
+                    if enable_debug:
+                        st.json(test_result)
+            else:
+                st.error("❌ Test fallito! Controlla l'API key e riprova.")
+                return
         
         keyword_clusters = {}
         if enable_keyword_clustering and (use_ai_classification or len(queries) > 0):
@@ -1040,14 +1095,18 @@ def main():
         related_to_queries = defaultdict(set)
         paa_to_domains = defaultdict(set)
         ai_overview_data = {}
+        successful_queries = 0
+        failed_queries = 0
 
         for i, query in enumerate(queries):
             status_text.text(f"🔍 Analizzando: {query} ({i+1}/{len(queries)})")
             
             try:
-                results = analyzer.fetch_serp_results(query, country, language, num_results)
+                results = analyzer.fetch_serp_results(query, country, language, num_results, use_advance_search)
                 
                 if results:
+                    successful_queries += 1
+                    
                     # Debug mode: mostra struttura dati
                     if enable_debug and i < 3:  # Solo per le prime 3 query per non sovraccaricare
                         with st.expander(f"🐛 Debug dati per '{query}'"):
@@ -1088,9 +1147,11 @@ def main():
                     paa_to_domains.update(paa_to_domains_query)
                     all_domains.extend(domain_page_types_query.keys())
                 else:
+                    failed_queries += 1
                     st.warning(f"⚠️ Nessun risultato per query: {query}")
             
             except Exception as e:
+                failed_queries += 1
                 st.error(f"⚠️ Errore durante l'analisi della query '{query}': {str(e)}")
                 continue  # Continua con la query successiva
             
@@ -1099,18 +1160,25 @@ def main():
             sleep_time = 0.5 if not use_ai_classification else 1.0
             time.sleep(sleep_time)
 
+        # Mostra statistiche finali
+        st.info(f"📊 **Statistiche Analisi**: {successful_queries} query riuscite, {failed_queries} fallite su {len(queries)} totali")
+
         status_text.text("✅ Analisi completata! Generazione report...")
 
         domains_counter = Counter(all_domains)
         
-        # Verifica se abbiamo risultati validi
-        if not domains_counter:
-            st.warning("⚠️ Nessun risultato valido trovato. Verifica le API keys e riprova.")
-            st.info("💡 Suggerimenti:")
+        # Verifica se abbiamo almeno alcuni risultati validi
+        if not domains_counter and successful_queries == 0:
+            st.error("❌ **Nessun risultato valido trovato per nessuna query.**")
+            st.info("💡 **Suggerimenti:**")
             st.info("- Controlla che la ScrapingDog API key sia corretta")
-            st.info("- Verifica di avere crediti sufficienti")
-            st.info("- Prova con query più semplici")
+            st.info("- Verifica di avere crediti sufficienti (hai bisogno di almeno 5-10 crediti per query)")
+            st.info("- Prova con query più semplici (es: 'pizza', 'news')")
+            st.info("- Usa il bottone '🧪 Testa API' per verificare la connessione")
             return
+        elif successful_queries < len(queries):
+            st.warning(f"⚠️ **Analisi parziale completata**: {successful_queries}/{len(queries)} query riuscite")
+            st.info("💡 Procedo con la generazione del report sui dati disponibili")
         
         try:
             excel_data, domains_df, page_type_df, domain_page_types_df, clustering_df, ai_overview_df, ai_sources_df = analyzer.create_excel_report(
@@ -1129,18 +1197,21 @@ def main():
         st.header("📊 Risultati Analisi")
 
         # Metriche principali
-        col1, col2, col3, col4, col5 = st.columns(5)
+        col1, col2, col3, col4, col5, col6 = st.columns(6)
         
         with col1:
-            st.metric("Query Analizzate", len(queries))
+            st.metric("Query Riuscite", successful_queries)
         with col2:
-            st.metric("Domini Trovati", len(domains_counter))
+            success_rate = (successful_queries / len(queries)) * 100 if len(queries) > 0 else 0
+            st.metric("Tasso Successo", f"{success_rate:.1f}%")
         with col3:
-            st.metric("PAA Questions", len(set(paa_questions)))
+            st.metric("Domini Trovati", len(domains_counter))
         with col4:
+            st.metric("PAA Questions", len(set(paa_questions)))
+        with col5:
             cluster_count = len(keyword_clusters) if keyword_clusters else 0
             st.metric("Cluster Semantici", cluster_count)
-        with col5:
+        with col6:
             ai_overview_count = 0
             if ai_overview_data:
                 ai_overview_count = sum(1 for ai_info in ai_overview_data.values() 
@@ -1155,22 +1226,25 @@ def main():
             col1, col2 = st.columns(2)
             
             with col1:
-                ai_percentage = (ai_overview_count / len(queries)) * 100
+                ai_percentage = (ai_overview_count / successful_queries) * 100 if successful_queries > 0 else 0
                 st.metric("% Query con AI Overview", f"{ai_percentage:.1f}%")
                 
                 # Grafico AI Overview presence
                 ai_presence_data = pd.DataFrame({
                     "Stato": ["Con AI Overview", "Senza AI Overview"],
-                    "Count": [ai_overview_count, len(queries) - ai_overview_count]
+                    "Count": [ai_overview_count, successful_queries - ai_overview_count]
                 })
                 
-                fig_ai = px.pie(
-                    ai_presence_data,
-                    values="Count",
-                    names="Stato", 
-                    title="Distribuzione AI Overview"
-                )
-                st.plotly_chart(fig_ai, use_container_width=True)
+                if ai_presence_data["Count"].sum() > 0:
+                    fig_ai = px.pie(
+                        ai_presence_data,
+                        values="Count",
+                        names="Stato", 
+                        title="Distribuzione AI Overview"
+                    )
+                    st.plotly_chart(fig_ai, use_container_width=True)
+                else:
+                    st.info("Nessun dato per il grafico AI Overview")
             
             with col2:
                 # Top domini citati in AI Overview
