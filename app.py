@@ -54,36 +54,74 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 class SERPAnalyzer:
-    def __init__(self, serpapi_key, openai_api_key):
-        self.serpapi_key = serpapi_key
+    def __init__(self, scrapingdog_api_key, openai_api_key):
+        self.scrapingdog_api_key = scrapingdog_api_key
         self.openai_api_key = openai_api_key
-        self.serpapi_url = "https://serpapi.com/search.json"
+        self.scrapingdog_url = "https://api.scrapingdog.com/google"
+        self.scrapingdog_ai_url = "https://api.scrapingdog.com/google/ai_overview"
         self.client = OpenAI(api_key=openai_api_key) if openai_api_key != "dummy" else None
         self.classification_cache = {}
         self.use_ai = True
         self.batch_size = 5
 
-    def fetch_serp_results(self, query, country="it", language="it", num_results=10):
-        """Effettua la ricerca SERP tramite SERPApi"""
+    def fetch_serp_results(self, query, country="us", language="en", num_results=10, use_advance_search=True):
+        """Effettua la ricerca SERP tramite ScrapingDog API"""
         params = {
-            "api_key": self.serpapi_key,
-            "engine": "google",
-            "q": query,
-            "num": num_results,
-            "gl": country,
-            "hl": language,
-            "google_domain": "google.it" if country == "it" else "google.com"
+            "api_key": self.scrapingdog_api_key,
+            "query": query,
+            "results": num_results,
+            "country": country,
+            "language": language,
+            "page": 0
+        }
+        
+        # Aggiungi advance_search solo se richiesto
+        if use_advance_search:
+            params["advance_search"] = "true"
+        
+        try:
+            response = requests.get(self.scrapingdog_url, params=params)
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 401:
+                st.error(f"⚠️ Errore 401 - ScrapingDog API key non valida per query '{query}'")
+                return None
+            elif response.status_code == 403:
+                st.error(f"⚠️ Errore 403 - Crediti ScrapingDog esauriti per query '{query}'")
+                return None
+            elif response.status_code == 429:
+                st.error(f"⚠️ Errore 429 - Troppe richieste, rallenta per query '{query}'")
+                return None
+            else:
+                st.error(f"Errore ScrapingDog per query '{query}': {response.status_code}")
+                # Mostra anche il contenuto della risposta per debug
+                try:
+                    error_content = response.json()
+                    st.error(f"Dettaglio errore: {error_content}")
+                except:
+                    st.error(f"Contenuto errore: {response.text[:200]}")
+                return None
+        except Exception as e:
+            st.error(f"Errore di connessione ScrapingDog: {e}")
+            return None
+
+    def fetch_ai_overview_details(self, ai_overview_url):
+        """Fetch dettagli AI Overview usando l'URL dedicato di ScrapingDog"""
+        if not ai_overview_url:
+            return None
+            
+        params = {
+            "api_key": self.scrapingdog_api_key,
+            "url": ai_overview_url
         }
         
         try:
-            response = requests.get(self.serpapi_url, params=params)
+            response = requests.get(self.scrapingdog_ai_url, params=params)
             if response.status_code == 200:
                 return response.json()
             else:
-                st.error(f"Errore SERPApi per query '{query}': {response.status_code}")
                 return None
         except Exception as e:
-            st.error(f"Errore di connessione: {e}")
             return None
 
     @lru_cache(maxsize=1000)
@@ -201,77 +239,6 @@ Rispondi solo con la categoria."""
             st.warning(f"Errore batch OpenAI: {e}")
             return {}
 
-    def debug_response_structure(self, data, query):
-        """Debug della struttura della risposta ScrapingDog per capire dove sono i dati AI Overview"""
-        st.write(f"🔍 **Debug struttura dati ScrapingDog per query: {query}**")
-        st.write("**Chiavi principali trovate:**")
-        for key in data.keys():
-            st.write(f"- {key}: {type(data[key])}")
-        
-        # Controlla specificamente AI Overview
-        if "ai_overview" in data:
-            st.write("**🤖 AI Overview trovato!**")
-            ai_data = data["ai_overview"]
-            st.write(f"- Tipo: {type(ai_data)}")
-            if isinstance(ai_data, dict):
-                st.write("- Sottocampi:")
-                for subkey in ai_data.keys():
-                    st.write(f"  - {subkey}: {type(ai_data[subkey])}")
-                
-                # Mostra text_blocks se presenti
-                if "text_blocks" in ai_data:
-                    st.write(f"  - text_blocks contiene {len(ai_data['text_blocks'])} blocchi")
-                
-                # Mostra references se presenti
-                if "references" in ai_data:
-                    st.write(f"  - references contiene {len(ai_data['references'])} fonti")
-                    for i, ref in enumerate(ai_data['references'][:3]):  # Prime 3
-                        st.write(f"    {i+1}. {ref.get('title', 'No title')} - {ref.get('source', 'No source')}")
-        
-        # Controlla organic_data (ScrapingDog)
-        if "organic_data" in data:
-            st.write(f"**📊 organic_data trovato: {len(data['organic_data'])} risultati**")
-        
-        # Controlla people_also_ask (ScrapingDog)
-        if "people_also_ask" in data:
-            st.write(f"**❓ people_also_ask trovato: {len(data['people_also_ask'])} domande**")
-            for i, paa in enumerate(data['people_also_ask'][:3]):  # Prime 3
-                st.write(f"    {i+1}. {paa.get('question', 'No question')}")
-        
-        # Controlla altri campi che potrebbero contenere AI Overview
-        other_ai_fields = ["answer_box", "featured_snippet", "knowledge_graph"]
-        for field in other_ai_fields:
-            if field in data:
-                st.write(f"**📦 {field} trovato:**")
-                field_data = data[field]
-                if isinstance(field_data, dict):
-                    for subkey in field_data.keys():
-                        st.write(f"  - {subkey}: {type(field_data[subkey])}")
-        
-        # Mostra alcuni campioni di dati se richiesto
-        if st.checkbox(f"Mostra dati JSON completi per '{query}'", key=f"debug_full_{query}"):
-            st.json(data)
-
-    def fetch_ai_overview_details(self, page_token):
-        """Fetch dettagli AI Overview usando il page_token dedicato"""
-        if not page_token:
-            return None
-            
-        params = {
-            "api_key": self.serpapi_key,
-            "engine": "google_ai_overview",
-            "page_token": page_token
-        }
-        
-        try:
-            response = requests.get(self.serpapi_url, params=params)
-            if response.status_code == 200:
-                return response.json()
-            else:
-                return None
-        except Exception as e:
-            return None
-
     def parse_ai_overview(self, data):
         """Estrae informazioni dall'AI Overview secondo ScrapingDog API"""
         ai_overview_info = {
@@ -348,6 +315,57 @@ Rispondi solo con la categoria."""
                         ai_overview_info["ai_source_domains"].append(source_info["domain"])
         
         return ai_overview_info
+
+    def debug_response_structure(self, data, query):
+        """Debug della struttura della risposta ScrapingDog per capire dove sono i dati AI Overview"""
+        st.write(f"🔍 **Debug struttura dati ScrapingDog per query: {query}**")
+        st.write("**Chiavi principali trovate:**")
+        for key in data.keys():
+            st.write(f"- {key}: {type(data[key])}")
+        
+        # Controlla specificamente AI Overview
+        if "ai_overview" in data:
+            st.write("**🤖 AI Overview trovato!**")
+            ai_data = data["ai_overview"]
+            st.write(f"- Tipo: {type(ai_data)}")
+            if isinstance(ai_data, dict):
+                st.write("- Sottocampi:")
+                for subkey in ai_data.keys():
+                    st.write(f"  - {subkey}: {type(ai_data[subkey])}")
+                
+                # Mostra text_blocks se presenti
+                if "text_blocks" in ai_data:
+                    st.write(f"  - text_blocks contiene {len(ai_data['text_blocks'])} blocchi")
+                
+                # Mostra references se presenti
+                if "references" in ai_data:
+                    st.write(f"  - references contiene {len(ai_data['references'])} fonti")
+                    for i, ref in enumerate(ai_data['references'][:3]):  # Prime 3
+                        st.write(f"    {i+1}. {ref.get('title', 'No title')} - {ref.get('source', 'No source')}")
+        
+        # Controlla organic_data (ScrapingDog)
+        if "organic_data" in data:
+            st.write(f"**📊 organic_data trovato: {len(data['organic_data'])} risultati**")
+        
+        # Controlla people_also_ask (ScrapingDog)
+        if "people_also_ask" in data:
+            st.write(f"**❓ people_also_ask trovato: {len(data['people_also_ask'])} domande**")
+            for i, paa in enumerate(data['people_also_ask'][:3]):  # Prime 3
+                st.write(f"    {i+1}. {paa.get('question', 'No question')}")
+        
+        # Controlla altri campi che potrebbero contenere AI Overview
+        other_ai_fields = ["answer_box", "featured_snippet", "knowledge_graph"]
+        for field in other_ai_fields:
+            if field in data:
+                st.write(f"**📦 {field} trovato:**")
+                field_data = data[field]
+                if isinstance(field_data, dict):
+                    for subkey in field_data.keys():
+                        st.write(f"  - {subkey}: {type(field_data[subkey])}")
+        
+        # Mostra alcuni campioni di dati se richiesto
+        if st.checkbox(f"Mostra dati JSON completi per '{query}'", key=f"debug_full_{query}"):
+            st.json(data)
 
     def cluster_keywords_with_custom(self, keywords, custom_clusters):
         """Clusterizza le keyword usando cluster personalizzati come priorità"""
@@ -845,6 +863,33 @@ def main():
         help="Inserisci la tua API key di OpenAI"
     )
 
+    st.sidebar.subheader("🔑 Validazione API")
+    if scrapingdog_api_key:
+        st.sidebar.success("✅ ScrapingDog API Key inserita")
+    else:
+        st.sidebar.warning("⚠️ Inserisci ScrapingDog API Key")
+    
+    if openai_api_key:
+        st.sidebar.success("✅ OpenAI API Key inserita")
+    else:
+        st.sidebar.info("💡 OpenAI opzionale per classificazione AI")
+    
+    # Test API Button
+    if st.sidebar.button("🧪 Testa API", help="Testa ScrapingDog API con una query semplice"):
+        if not scrapingdog_api_key:
+            st.sidebar.error("⚠️ Inserisci prima la ScrapingDog API Key!")
+        else:
+            with st.sidebar:
+                with st.spinner("Testando API..."):
+                    test_analyzer = SERPAnalyzer(scrapingdog_api_key, "dummy")
+                    test_result = test_analyzer.fetch_serp_results("test", "us", "en", 5, False)
+                    
+                    if test_result:
+                        st.sidebar.success("✅ API funziona correttamente!")
+                        st.sidebar.write(f"Chiavi trovate: {list(test_result.keys())}")
+                    else:
+                        st.sidebar.error("❌ API non funziona - controlla la key")
+
     st.sidebar.subheader("🌍 Parametri di Ricerca")
     country = st.sidebar.selectbox(
         "Paese",
@@ -868,31 +913,6 @@ def main():
         help="Numero di risultati da analizzare per ogni query"
     )
     
-    st.sidebar.subheader("🔑 Validazione API")
-    if scrapingdog_api_key:
-        st.sidebar.success("✅ ScrapingDog API Key inserita")
-    else:
-        st.sidebar.warning("⚠️ Inserisci ScrapingDog API Key")
-    
-    if openai_api_key:
-        st.sidebar.success("✅ OpenAI API Key inserita")
-    else:
-    # Test API Button
-    if st.sidebar.button("🧪 Testa API", help="Testa ScrapingDog API con una query semplice"):
-        if not scrapingdog_api_key:
-            st.sidebar.error("⚠️ Inserisci prima la ScrapingDog API Key!")
-        else:
-            with st.sidebar:
-                with st.spinner("Testando API..."):
-                    test_analyzer = SERPAnalyzer(scrapingdog_api_key, "dummy")
-                    test_result = test_analyzer.fetch_serp_results("test", "us", "en", 5, False)  # Test senza advance_search per risparmiare crediti
-                    
-                    if test_result:
-                        st.sidebar.success("✅ API funziona correttamente!")
-                        st.sidebar.write(f"Chiavi trovate: {list(test_result.keys())}")
-                    else:
-                        st.sidebar.error("❌ API non funziona - controlla la key")
-
     st.sidebar.subheader("⚡ Opzioni Velocità")
     use_ai_classification = st.sidebar.checkbox(
         "Usa AI per classificazione avanzata",
@@ -923,7 +943,13 @@ def main():
     enable_debug = st.sidebar.checkbox(
         "🐛 Modalità Debug",
         value=False,
-        help="Mostra struttura dati SERPApi per debug"
+        help="Mostra struttura dati ScrapingDog per debug"
+    )
+    
+    test_single_query = st.sidebar.checkbox(
+        "🧪 Test Singola Query",
+        value=False,
+        help="Testa prima una singola query per verificare l'API"
     )
 
     st.header("📝 Inserisci le Query")
